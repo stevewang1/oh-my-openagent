@@ -29,11 +29,12 @@ import {
 } from "./session-manager"
 
 import { knowledge_base } from "./knowledge-base"
+import { workbench } from "./workbench"
 
 export { sessionExists } from "./session-manager/storage"
 
 export { interactive_bash, startBackgroundCheck as startTmuxCheck } from "./interactive-bash"
-export { createSkillTool } from "./skill"
+export { createSkillTool, createSkillCatalogTool } from "./skill"
 export { getTmuxPath } from "./interactive-bash/utils"
 export { createSkillMcpTool } from "./skill-mcp"
 
@@ -79,4 +80,5 @@ export const builtinTools: Record<string, ToolDefinition> = {
   session_search,
   session_info,
   knowledge_base,
+  workbench,
 }

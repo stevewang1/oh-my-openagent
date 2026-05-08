@@ -31,6 +31,7 @@ import {
   createPrometheusMdOnlyHook,
   createMemorySystemHook,
   createStartupConfigCheckerHook,
+  createWorkbenchCheckpointHook,
 } from "./hooks";
 import { setConfidenceConfig } from "./hooks/chief-orchestrator/confidence-router";
 import {
@@ -57,6 +58,7 @@ import {
   createBackgroundTools,
   createLookAt,
   createSkillTool,
+  createSkillCatalogTool,
   createSkillMcpTool,
   createSlashcommandTool,
   discoverCommandsSync,
@@ -235,6 +237,10 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
     ? safeCreateHook("memory-system", () => createMemorySystemHook(ctx))
     : null;
 
+  const workbenchCheckpoint = isHookEnabled("workbench-checkpoint")
+    ? safeCreateHook("workbench-checkpoint", () => createWorkbenchCheckpointHook(ctx))
+    : null;
+
   const startupConfigChecker = isHookEnabled("startup-config-checker")
     ? safeCreateHook("startup-config-checker", () => createStartupConfigCheckerHook(ctx, pluginConfig))
     : null;
@@ -304,6 +310,9 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
     mcpManager: skillMcpManager,
     getSessionID: getSessionIDForMcp,
   });
+  const skillCatalogTool = createSkillCatalogTool({
+    skills: mergedSkills,
+  });
   const skillMcpTool = createSkillMcpTool({
     manager: skillMcpManager,
     getLoadedSkills: () => mergedSkills,
@@ -341,6 +350,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
       look_at: lookAt,
       chief_task: chiefTask,
       skill: skillTool,
+      skill_catalog: skillCatalogTool,
       skill_mcp: skillMcpTool,
       slashcommand: slashcommandTool,
       interactive_bash,
@@ -449,6 +459,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
       ralphLoop?.event(input);
       chiefOrchestrator?.handler(input);
       memorySystem?.event(input);
+      workbenchCheckpoint?.event(input);
       startupConfigChecker?.event(input);
 
       const { event } = input;

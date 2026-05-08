@@ -53,7 +53,7 @@ ${SWITCH_PLUGIN_TEMPLATE}
   },
   "super-analyst": {
     description:
-      "(builtin) Elite analytical consulting system with 12 professional frameworks",
+      "(builtin) Decision analysis, structured research, and framework selection",
     template: `<command-instruction>
 Use the skill tool to load the super-analyst skill, then follow its instructions.
 
@@ -67,7 +67,7 @@ $ARGUMENTS
   },
   "super-writer": {
     description:
-      "(builtin) Professional content creation with 6 writing methodologies",
+      "(builtin) Content drafting with lightweight methodology and style control",
     template: `<command-instruction>
 Use the skill tool to load the super-writer skill, then follow its instructions.
 
@@ -81,7 +81,7 @@ $ARGUMENTS
   },
   "super-fact-checker": {
     description:
-      "(builtin) Systematic verification with source credibility assessment",
+      "(builtin) Claim extraction, verification, source assessment, corrections",
     template: `<command-instruction>
 Use the skill tool to load the super-fact-checker skill, then follow its instructions.
 
@@ -95,7 +95,7 @@ $ARGUMENTS
   },
   "super-editor": {
     description:
-      "(builtin) 4-layer editing methodology: structure → paragraph → sentence → word",
+      "(builtin) Edit existing content and explain material changes",
     template: `<command-instruction>
 Use the skill tool to load the super-editor skill, then follow its instructions.
 
@@ -109,7 +109,7 @@ $ARGUMENTS
   },
   "super-interviewer": {
     description:
-      "(builtin) Dialogue techniques: open questions, 5 whys, Socratic method",
+      "(builtin) Thought clarification, requirement discovery, Socratic dialogue",
     template: `<command-instruction>
 Use the skill tool to load the super-interviewer skill, then follow its instructions.
 
@@ -135,9 +135,22 @@ $ARGUMENTS
 </user-request>`,
     argumentHint: "<vault operation or search query>",
   },
+  "super-workbench": {
+    description: "(builtin) Skill routing, task checkpoint, restore, and report workbench",
+    template: `<command-instruction>
+Use the skill tool to load the super-workbench skill, then follow its instructions.
+
+Call: skill({ name: "super-workbench" })
+</command-instruction>
+
+<user-request>
+$ARGUMENTS
+</user-request>`,
+    argumentHint: "<task, skill selection, restore, or report request>",
+  },
   "super-workflow": {
     description:
-      "(builtin) End-to-end content production workflow with mandatory quality gates",
+      "(builtin) Scaled content workflow with quality gates for non-trivial work",
     template: `<command-instruction>
 Use the skill tool to load the super-workflow skill, then follow its instructions.
 

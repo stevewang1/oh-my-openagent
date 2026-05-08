@@ -11,6 +11,7 @@ export type BuiltinCommandName =
   | "super-editor"
   | "super-interviewer"
   | "super-obsidian"
+  | "super-workbench"
   | "super-workflow"
   | "memory-consolidate"
   | "configure-models"

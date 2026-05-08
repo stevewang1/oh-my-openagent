@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, mock, spyOn } from "bun:test"
 import * as fs from "node:fs"
 import { createSkillTool } from "./tools"
+import { createSkillCatalogTool } from "./catalog"
 import { SkillMcpManager } from "../../features/skill-mcp-manager"
 import type { LoadedSkill } from "../../features/opencode-skill-loader/types"
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js"
@@ -235,5 +236,43 @@ describe("skill tool - MCP schema display", () => {
       expect(result).toContain("required")
       expect(result).toMatch(/sql[\s\S]*string/i)
     })
+  })
+})
+
+
+describe("skill_catalog tool", () => {
+  it("lists and searches provided skills", async () => {
+    const tool = createSkillCatalogTool({
+      skills: [
+        {
+          name: "super-workbench",
+          path: "/test/skills/super-workbench/SKILL.md",
+          resolvedPath: "/test/skills/super-workbench",
+          definition: {
+            name: "super-workbench",
+            description: "Skill workbench and routing assistant",
+            template: "",
+          },
+          scope: "builtin",
+        },
+        {
+          name: "dbs-hook",
+          path: "/test/skills/dbs-hook/SKILL.md",
+          resolvedPath: "/test/skills/dbs-hook",
+          definition: {
+            name: "dbs-hook",
+            description: "Short video hook writing assistant",
+            template: "",
+          },
+          scope: "opencode-project",
+        },
+      ],
+    })
+
+    const result = await tool.execute({ query: "video" }, mockContext)
+
+    expect(result).toContain("dbs-hook")
+    expect(result).toContain("opencode-project")
+    expect(result).not.toContain("super-workbench")
   })
 })

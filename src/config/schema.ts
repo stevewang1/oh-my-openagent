@@ -34,6 +34,7 @@ export const BuiltinSkillNameSchema = z.enum([
   "super-editor",
   "super-interviewer",
   "super-obsidian",
+  "super-workbench",
   "super-workflow",
 ]);
 
@@ -84,6 +85,7 @@ export const HookNameSchema = z.enum([
   "prometheus-md-only",
   "chief-orchestrator",
   "memory-system",
+  "workbench-checkpoint",
   "startup-config-checker",
 ]);
 
@@ -92,6 +94,7 @@ export const BuiltinCommandNameSchema = z.enum([
   "ralph-loop",
   "cancel-ralph",
   "switch",
+  "super-workbench",
 ]);
 
 export const AgentOverrideConfigSchema = z.object({

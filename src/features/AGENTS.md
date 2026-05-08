@@ -13,8 +13,6 @@ features/
 ├── builtin-commands/           # Built-in slash commands
 │   └── templates/              # start-work, refactor, init-deep, ralph-loop
 ├── builtin-skills/             # Built-in skills
-│   ├── git-master/             # Atomic commits, rebase, history search
-│   └── frontend-ui-ux/         # Designer-turned-developer skill
 ├── claude-code-agent-loader/   # ~/.claude/agents/*.md
 ├── claude-code-command-loader/ # ~/.claude/commands/*.md
 ├── claude-code-mcp-loader/     # .mcp.json files

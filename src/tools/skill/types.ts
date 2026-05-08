@@ -5,6 +5,12 @@ export interface SkillArgs {
   name: string
 }
 
+export interface SkillCatalogArgs {
+  query?: string
+  scope?: SkillScope
+  limit?: number
+}
+
 export interface SkillInfo {
   name: string
   description: string

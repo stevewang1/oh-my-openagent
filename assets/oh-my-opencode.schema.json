@@ -40,7 +40,10 @@
           "super-writer",
           "super-fact-checker",
           "super-editor",
-          "super-interviewer"
+          "super-interviewer",
+          "super-obsidian",
+          "super-workbench",
+          "super-workflow"
         ]
       }
     },
@@ -80,6 +83,7 @@
           "prometheus-md-only",
           "chief-orchestrator",
           "memory-system",
+          "workbench-checkpoint",
           "startup-config-checker"
         ]
       }
@@ -89,10 +93,11 @@
       "items": {
         "type": "string",
         "enum": [
-          "init-deep",
+          "wiki",
           "ralph-loop",
           "cancel-ralph",
-          "switch"
+          "switch",
+          "super-workbench"
         ]
       }
     },
