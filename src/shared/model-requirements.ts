@@ -126,6 +126,10 @@ export const AGENT_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
     fallbackChain: [
       {
         providers: ["anthropic", "github-copilot", "opencode", "vercel"],
+        model: "claude-sonnet-4-6",
+      },
+      {
+        providers: ["anthropic", "github-copilot", "opencode", "vercel"],
         model: "claude-opus-4-7",
         variant: "max",
       },
@@ -240,6 +244,8 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
         model: "gemini-3.1-pro",
         variant: "high",
       },
+      { providers: ["opencode-go", "vercel"], model: "kimi-k2.6" },
+      { providers: ["opencode-go", "vercel"], model: "glm-5.1" },
     ],
   },
   artistry: {
@@ -255,6 +261,8 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
         variant: "max",
       },
       { providers: ["openai", "github-copilot", "opencode", "vercel"], model: "gpt-5.5" },
+      { providers: ["opencode-go", "vercel"], model: "kimi-k2.6" },
+      { providers: ["opencode-go", "vercel"], model: "glm-5.1" },
     ],
   },
   quick: {

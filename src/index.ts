@@ -14,9 +14,18 @@ import { loadPluginConfig } from "./plugin-config"
 import { createModelCacheState } from "./plugin-state"
 import { createFirstMessageVariantGate } from "./shared/first-message-variant"
 import { injectServerAuthIntoClient, log, logLegacyPluginStartupWarning } from "./shared"
-import { installAgentSortShim } from "./shared/agent-sort-shim"
+import { installAgentSortShim, setAgentSortOrder } from "./shared/agent-sort-shim"
 import { detectExternalSkillPlugin, getSkillPluginConflictWarning } from "./shared/external-plugin-detector"
 import { startBackgroundCheck as startTmuxCheck } from "./tools/interactive-bash"
+
+type CompactionAutocontinueHook = (
+  input: { sessionID: string },
+  output: { enabled: boolean },
+) => Promise<void>
+
+type HooksWithCompactionAutocontinue = Hooks & {
+  "experimental.compaction.autocontinue"?: CompactionAutocontinueHook
+}
 
 const serverPlugin: Plugin = async (input, _options): Promise<Hooks> => {
   installAgentSortShim()
@@ -34,6 +43,7 @@ const serverPlugin: Plugin = async (input, _options): Promise<Hooks> => {
   injectServerAuthIntoClient(input.client)
 
   const pluginConfig = loadPluginConfig(input.directory, input)
+  setAgentSortOrder(pluginConfig.agent_order)
 
   if (pluginConfig.openclaw) {
     await initializeOpenClaw(pluginConfig.openclaw)
@@ -104,7 +114,7 @@ const serverPlugin: Plugin = async (input, _options): Promise<Hooks> => {
     tools: toolsResult.filteredTools,
   })
 
-  return {
+  const pluginHooks: HooksWithCompactionAutocontinue = {
     ...pluginInterface,
 
     "experimental.session.compacting": async (
@@ -121,7 +131,17 @@ const serverPlugin: Plugin = async (input, _options): Promise<Hooks> => {
         output.context.push(hooks.compactionContextInjector.inject(compactingInput.sessionID))
       }
     },
+
+    "experimental.compaction.autocontinue": async (
+      autocontinueInput: { sessionID: string },
+      _output: { enabled: boolean },
+    ): Promise<void> => {
+      await hooks.compactionContextInjector?.restore(autocontinueInput.sessionID)
+      await hooks.compactionTodoPreserver?.restore(autocontinueInput.sessionID)
+    },
   }
+
+  return pluginHooks
 }
 
 const pluginModule: PluginModule = {

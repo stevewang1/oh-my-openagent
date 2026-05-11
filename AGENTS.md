@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-OpenCode plugin (npm: `oh-my-opencode`, dual-published as `oh-my-openagent` during the rename transition) extending OpenCode with 11 agents, ~50 lifecycle hooks across 57 dirs, 20–39 tools (gated by config flags including team-mode), 3-tier MCP system (built-in + .mcp.json + skill-embedded), Hashline LINE#ID edit tool, IntentGate keyword detector, Team Mode (parallel multi-agent coordination, OFF by default), and Claude Code compatibility. **1967 TypeScript files (1304 source + 663 test), 278k LOC, 120 barrel `index.ts` files.** Entry: `src/index.ts` → 7-step init.
+OpenCode plugin (npm: `oh-my-opencode`, dual-published as `oh-my-openagent` during the rename transition) extending OpenCode with 11 agents, 52–59 lifecycle hooks (base / +team-mode) across 57 dirs, 20–39 tools (gated by config flags including team-mode), 3-tier MCP system (built-in + .mcp.json + skill-embedded), Hashline LINE#ID edit tool, IntentGate keyword detector, Team Mode (parallel multi-agent coordination, OFF by default), and Claude Code compatibility. **1967 TypeScript files (1304 source + 663 test), 278k LOC, 120 barrel `index.ts` files.** Entry: `src/index.ts` → 7-step init.
 
 ## STRUCTURE
 
@@ -29,6 +29,7 @@ oh-my-opencode/
 │   ├── plugin-handlers/      # 6-phase config loading pipeline
 │   ├── openclaw/             # Bidirectional external integration (Discord/Telegram/HTTP/shell + reply listener daemon)
 │   └── testing/              # Test utilities
+├── web/                      # Marketing site (Next.js 15 + Cloudflare Workers, deployed to ohmyopenagent.com via opennextjs-cloudflare). Independent package with own bun.lock — see web/AGENTS.md
 ├── packages/                 # 11 platform-specific compiled binary packages (darwin/linux/windows, AVX2 + baseline)
 ├── bin/                      # Platform-detection JS shim (oh-my-opencode + oh-my-openagent)
 ├── script/                   # Build/publish automation (singular, not scripts/)
@@ -84,20 +85,32 @@ pluginModule.server(input, options)
 
 OFF by default. Parallel multi-agent coordination, modeled after Claude Code Agent Teams. Enable via `team_mode.enabled` in `.opencode/oh-my-opencode.jsonc` or user config; restart OpenCode after change.
 
+Full schema in [`src/config/schema/team-mode.ts`](file:///Users/yeongyu/local-workspaces/omo/src/config/schema/team-mode.ts) (11 fields):
+
 ```jsonc
 {
   "team_mode": {
     "enabled": true,
-    "max_parallel_members": 4,
-    "max_members": 8,
-    "tmux_visualization": false
+    "tmux_visualization": false,
+    "max_parallel_members": 4,            // 1..8
+    "max_members": 8,                     // 1..8 hard cap
+    "max_messages_per_run": 10000,
+    "max_wall_clock_minutes": 120,
+    "max_member_turns": 500,
+    "base_dir": null,                     // override default ~/.omo/teams or <project>/.omo/teams
+    "message_payload_max_bytes": 32768,   // ≥1024
+    "recipient_unread_max_bytes": 262144, // ≥1024
+    "mailbox_poll_interval_ms": 3000      // ≥500
   }
 }
 ```
 
 Teams live as directories under `~/.omo/teams/{name}/config.json` (user) or `<project>/.omo/teams/{name}/config.json` (project; project beats user on collisions). Members declared as `kind: "subagent_type"` (direct agent) or `kind: "category"` (routed through `sisyphus-junior`).
 
-**Eligible members only:** sisyphus, atlas, sisyphus-junior, hephaestus. Read-only / orchestration agents (oracle, librarian, explore, multimodal-looker, metis, momus, prometheus) are rejected at parse time — use `task` (delegate) for those.
+**Member eligibility** (from [`AGENT_ELIGIBILITY_REGISTRY`](file:///Users/yeongyu/local-workspaces/omo/src/features/team-mode/types.ts)):
+- `eligible`: sisyphus, atlas, sisyphus-junior
+- `conditional`: hephaestus (lacks `teammate: "allow"` permission by default — apply D-36 in `tool-config-handler.ts` or use `subagent_type: "sisyphus"` instead)
+- `hard-reject`: oracle, librarian, explore, multimodal-looker, metis, momus, prometheus (rejected at parse — use `task`/delegate-task)
 
 **Storage layout** (`~/.omo/teams/{name}/`): `config.json` (spec), `state.json` (runtime), `mailbox/` (messages), `tasklist.jsonl` (tasks), `worktrees/` (per-member git worktrees).
 
@@ -153,7 +166,7 @@ Schema autocomplete: `"$schema": "https://raw.githubusercontent.com/code-yeongyu
 
 - **Canonical agent order:** Sisyphus → Hephaestus → Prometheus → Atlas. Enforced by `installAgentSortShim()` (patches `Array.prototype.toSorted`/`.sort` narrowly when the array contains ≥2 canonical core agents). See [`src/plugin-handlers/AGENTS.md`](file:///Users/yeongyu/local-workspaces/omo/src/plugin-handlers/AGENTS.md) for the full history of why this exists.
 - **Hashline edit + read pairing:** Every `Read` tool output is tagged with `LINE#ID` content hashes; `hashline_edit` validates the hash before applying. Stale hash → reject.
-- **5-tier hook composition:** Session (24) + ToolGuard (14) + Transform (5) + Continuation (7) + Skill (2). Composed by `createCoreHooks()` + `createContinuationHooks()` + `createSkillHooks()`.
+- **5-tier hook composition:** Session (24) + ToolGuard (14) + Transform (5) + Continuation (7) + Skill (2) = 52 base. With `team_mode.enabled`: +1 ToolGuard (`team-tool-gating`), +2 Transform (`team-mode-status-injector`, `team-mailbox-injector`), +4 direct event handlers in `src/plugin/event.ts` (`team-session-events/*`) = 59 total. Composed by `createCoreHooks()` + `createContinuationHooks()` + `createSkillHooks()`.
 - **Per-session MCP isolation:** Tier-3 MCP clients keyed by `${sessionID}:${skillName}:${serverName}` so the same skill in two sessions does not share state.
 - **Two fallback systems:** `model-fallback` (proactive, chat.params) vs `runtime-fallback` (reactive, session.error). They operate independently — no direct integration.
 - **OpenClaw bidirectional:** Outbound dispatchers fire on session events; inbound daemon polls Discord/Telegram and `send-keys` replies into the tracked tmux pane.
@@ -218,6 +231,8 @@ bunx oh-my-opencode mcp-oauth login <server-url>  # Tier-3 MCP OAuth (PKCE + DCR
 | `refresh-model-capabilities.yml` | weekly cron / dispatch | Refresh model capabilities from models.dev API |
 | `cla.yml` | issue_comment / PR | CLA assistant for contributors |
 | `lint-workflows.yml` | push to .github/ | actionlint + shellcheck on workflow files |
+| `web-ci.yml` | push/PR touching `web/**` | format-check, lint, type-check, next build, opennextjs-cloudflare build |
+| `web-deploy.yml` | push to master touching `web/**` OR manual dispatch | Cloudflare Workers deploy via `cloudflare/wrangler-action@v3` (requires `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` secrets) |
 
 ## NOTES
 
