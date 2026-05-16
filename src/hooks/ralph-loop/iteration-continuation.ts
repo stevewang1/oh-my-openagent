@@ -9,6 +9,7 @@ import { createIterationSession, selectSessionInTui } from "./session-reset-stra
 type ContinuationOptions = {
   directory: string
   apiTimeoutMs: number
+  idleSettleMs: number
   previousSessionID: string
   loopState: {
     setSessionID: (sessionID: string) => RalphLoopState | null
@@ -16,7 +17,8 @@ type ContinuationOptions = {
 }
 
 export type ContinuationResult =
-  | { status: "dispatched" }
+  | { status: "dispatched"; sessionID: string }
+  | { status: "dispatch_deferred"; reason: "active" | "reserved" }
   | { status: "session_creation_rejected" }
   | { status: "dispatch_rejected"; error: unknown }
 
@@ -45,7 +47,11 @@ export async function continueIteration(
         prompt: continuationPrompt,
         directory: options.directory,
         apiTimeoutMs: options.apiTimeoutMs,
+        idleSettleMs: options.idleSettleMs,
       })
+      if (promptResult.status === "deferred") {
+        return { status: "dispatch_deferred", reason: promptResult.reason }
+      }
       if (promptResult.status === "rejected") {
         return { status: "dispatch_rejected", error: promptResult.error }
       }
@@ -61,10 +67,10 @@ export async function continueIteration(
         previousSessionID: options.previousSessionID,
         newSessionID,
       })
-      return { status: "dispatched" }
+      return { status: "dispatch_rejected", error: "state commit failed after reset dispatch" }
     }
 
-    return { status: "dispatched" }
+    return { status: "dispatched", sessionID: newSessionID }
   }
 
   try {
@@ -73,7 +79,11 @@ export async function continueIteration(
       prompt: continuationPrompt,
       directory: options.directory,
       apiTimeoutMs: options.apiTimeoutMs,
+      idleSettleMs: options.idleSettleMs,
     })
+    if (promptResult.status === "deferred") {
+      return { status: "dispatch_deferred", reason: promptResult.reason }
+    }
     if (promptResult.status === "rejected") {
       return { status: "dispatch_rejected", error: promptResult.error }
     }
@@ -81,5 +91,5 @@ export async function continueIteration(
     return { status: "dispatch_rejected", error }
   }
 
-  return { status: "dispatched" }
+  return { status: "dispatched", sessionID: options.previousSessionID }
 }

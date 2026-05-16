@@ -4,6 +4,7 @@ import type { PluginInput } from "@opencode-ai/plugin"
 import { TASK_CLEANUP_DELAY_MS } from "./constants"
 import { BackgroundManager } from "./manager"
 import type { BackgroundTask } from "./types"
+import { releaseAllPromptAsyncReservationsForTesting } from "../../hooks/shared/prompt-async-gate"
 import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker"
 
 type PromptAsyncCall = {
@@ -17,10 +18,26 @@ type PromptAsyncCall = {
   }
 }
 
+type SessionMessageForTest = {
+  info?: {
+    role?: string
+    finish?: string
+    time?: { created?: number }
+  }
+  parts?: Array<{ type?: string }>
+}
+
 type FakeTimers = {
   getDelay: (timer: ReturnType<typeof setTimeout>) => number | undefined
   run: (timer: ReturnType<typeof setTimeout>) => void
   restore: () => void
+}
+
+type PendingParentWakeForTest = {
+  promptContext?: Record<string, unknown>
+  notifications: string[]
+  shouldReply: boolean
+  toolCallDeferralStartedAt?: number
 }
 
 let managerUnderTest: BackgroundManager | undefined
@@ -29,6 +46,7 @@ let fakeTimers: FakeTimers | undefined
 afterEach(() => {
   managerUnderTest?.shutdown()
   fakeTimers?.restore()
+  releaseAllPromptAsyncReservationsForTesting()
   managerUnderTest = undefined
   fakeTimers = undefined
 })
@@ -59,6 +77,7 @@ function createManager(
   enableParentSessionNotifications: boolean,
   sessionStatuses?: Record<string, { type: string }>,
   promptAsyncImpl?: (call: PromptAsyncCall) => Promise<unknown>,
+  sessionMessages: SessionMessageForTest[] = [],
 ): {
   manager: BackgroundManager
   promptAsyncCalls: PromptAsyncCall[]
@@ -66,7 +85,7 @@ function createManager(
   const promptAsyncCalls: PromptAsyncCall[] = []
   const client = {
     session: {
-      messages: async () => [],
+      messages: async () => sessionMessages,
       status: async () => ({ data: sessionStatuses ?? {} }),
       prompt: async () => ({}),
       promptAsync: async (call: PromptAsyncCall) => {
@@ -79,9 +98,8 @@ function createManager(
       abort: async () => ({}),
     },
   }
-  const placeholderClient = {} as PluginInput["client"]
   const ctx: PluginInput = {
-    client: placeholderClient,
+    client: client as PluginInput["client"],
     project: {} as PluginInput["project"],
     directory: tmpdir(),
     worktree: tmpdir(),
@@ -92,7 +110,6 @@ function createManager(
   const manager = new BackgroundManager(
     { pluginContext: ctx, config: undefined, enableParentSessionNotifications }
   )
-  Reflect.set(manager, "client", client)
 
   return { manager, promptAsyncCalls }
 }
@@ -154,6 +171,13 @@ function getPendingNotifications(manager: BackgroundManager): Map<string, string
   return Reflect.get(manager, "pendingNotifications") as Map<string, string[]>
 }
 
+function getPendingParentWakes(manager: BackgroundManager): Map<string, PendingParentWakeForTest> {
+  const parentWakeNotifier = Reflect.get(manager, "parentWakeNotifier") as {
+    getPendingParentWakes: () => Map<string, PendingParentWakeForTest>
+  }
+  return parentWakeNotifier.getPendingParentWakes()
+}
+
 function getCompletionTimers(manager: BackgroundManager): Map<string, ReturnType<typeof setTimeout>> {
   return Reflect.get(manager, "completionTimers") as Map<string, ReturnType<typeof setTimeout>>
 }
@@ -161,6 +185,32 @@ function getCompletionTimers(manager: BackgroundManager): Map<string, ReturnType
 async function notifyParentSessionForTest(manager: BackgroundManager, task: BackgroundTask): Promise<void> {
   const notifyParentSession = Reflect.get(manager, "notifyParentSession") as (task: BackgroundTask) => Promise<void>
   return notifyParentSession.call(manager, task)
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now()
+  while (!predicate()) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+function waitForDeferredWake(promptAsyncCalls: PromptAsyncCall[]): Promise<void> {
+  return waitUntil(() => promptAsyncCalls.length > 0, 600)
+}
+
+function waitForDeferredWakeRetry(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 1_180))
+}
+
+function waitForRequeuedParentWake(manager: BackgroundManager, sessionID: string): Promise<void> {
+  return waitUntil(() => (getPendingParentWakes(manager).get(sessionID)?.notifications.length ?? 0) > 0, 600)
+}
+
+function waitForCoalescedFlush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 400))
 }
 
 function getRequiredTimer(manager: BackgroundManager, taskID: string): ReturnType<typeof setTimeout> {
@@ -217,11 +267,135 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
   })
 
   describe("#given background tasks for same parent", () => {
-    test("#when the second completion notification is sent #then ALL BACKGROUND TASKS COMPLETE notification still works correctly", async () => {
+    test("#when two completions arrive back-to-back while parent is idle #then one batched notification is sent with both tasks", async () => {
       // given
       const { manager, promptAsyncCalls } = createManager(true)
       managerUnderTest = manager
-      fakeTimers = installFakeTimers()
+      const taskA = createTask({ id: "task-a", parentSessionId: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const taskB = createTask({ id: "task-b", parentSessionId: "parent-1", description: "task B", status: "running" })
+      getTasks(manager).set(taskA.id, taskA)
+      getTasks(manager).set(taskB.id, taskB)
+      getPendingByParent(manager).set(taskA.parentSessionId, new Set([taskA.id, taskB.id]))
+
+      await notifyParentSessionForTest(manager, taskA)
+      taskB.status = "completed"
+      taskB.completedAt = new Date("2026-03-11T00:02:00.000Z")
+
+      // when
+      await notifyParentSessionForTest(manager, taskB)
+      await waitForCoalescedFlush()
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      const batchedCall = promptAsyncCalls[0]
+      if (!batchedCall) {
+        throw new Error("Missing batched notification call")
+      }
+      expect(batchedCall.body.noReply).toBe(false)
+      const batchedPayload = JSON.stringify(batchedCall.body.parts)
+      expect(batchedPayload).toContain("ALL BACKGROUND TASKS COMPLETE")
+      expect(batchedPayload).toContain(OMO_INTERNAL_INITIATOR_MARKER)
+      expect(batchedPayload).toContain(taskA.id)
+      expect(batchedPayload).toContain(taskB.id)
+      expect(batchedPayload).toContain(taskA.description)
+      expect(batchedPayload).toContain(taskB.description)
+    })
+
+    test("#when many completions arrive in rapid succession while parent is idle #then a single coalesced notification is sent", async () => {
+      // given
+      const { manager, promptAsyncCalls } = createManager(true)
+      managerUnderTest = manager
+      const taskIds = ["task-1", "task-2", "task-3", "task-4", "task-5"]
+      const tasks = taskIds.map((id, index) => createTask({
+        id,
+        parentSessionId: "parent-1",
+        description: `description ${id}`,
+        status: "completed",
+        completedAt: new Date(`2026-03-11T00:01:0${index}.000Z`),
+      }))
+      for (const task of tasks) {
+        getTasks(manager).set(task.id, task)
+      }
+      getPendingByParent(manager).set("parent-1", new Set(taskIds))
+
+      // when
+      for (const task of tasks) {
+        await notifyParentSessionForTest(manager, task)
+      }
+      await waitForCoalescedFlush()
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      const batchedCall = promptAsyncCalls[0]
+      if (!batchedCall) {
+        throw new Error("Missing batched notification call")
+      }
+      expect(batchedCall.body.noReply).toBe(false)
+      const batchedPayload = JSON.stringify(batchedCall.body.parts)
+      expect(batchedPayload).toContain("ALL BACKGROUND TASKS COMPLETE")
+      for (const task of tasks) {
+        expect(batchedPayload).toContain(task.id)
+        expect(batchedPayload).toContain(task.description)
+      }
+    })
+
+    test("#when parent session is busy #then all-complete notification does not start an overlapping parent reply", async () => {
+      // given
+      const sessionStatuses: Record<string, { type: string }> = {
+        "parent-1": { type: "busy" },
+      }
+      const { manager, promptAsyncCalls } = createManager(true, sessionStatuses)
+      managerUnderTest = manager
+      const task = createTask({ id: "task-a", parentSessionId: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      getTasks(manager).set(task.id, task)
+      getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
+
+      // when
+      await notifyParentSessionForTest(manager, task)
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(0)
+    })
+
+    test("#when partial completion arrives while parent session is busy #then notification waits until idle without waking a reply", async () => {
+      // given
+      const sessionStatuses: Record<string, { type: string }> = {
+        "parent-1": { type: "busy" },
+      }
+      const { manager, promptAsyncCalls } = createManager(true, sessionStatuses)
+      managerUnderTest = manager
+      const taskA = createTask({ id: "task-a", parentSessionId: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const taskB = createTask({ id: "task-b", parentSessionId: "parent-1", description: "task B", status: "running" })
+      getTasks(manager).set(taskA.id, taskA)
+      getTasks(manager).set(taskB.id, taskB)
+      getPendingByParent(manager).set(taskA.parentSessionId, new Set([taskA.id, taskB.id]))
+
+      // when
+      await notifyParentSessionForTest(manager, taskA)
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(0)
+
+      // when
+      sessionStatuses["parent-1"] = { type: "idle" }
+      manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
+      await waitForDeferredWake(promptAsyncCalls)
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(promptAsyncCalls[0]?.body.noReply).toBe(true)
+      const notificationPayload = JSON.stringify(promptAsyncCalls[0]?.body.parts)
+      expect(notificationPayload).toContain("BACKGROUND TASK COMPLETED")
+      expect(notificationPayload).not.toContain("ALL BACKGROUND TASKS COMPLETE")
+    })
+
+    test("#when partial and all-complete notifications queue while parent session is busy #then idle flushes one reply wake", async () => {
+      // given
+      const sessionStatuses: Record<string, { type: string }> = {
+        "parent-1": { type: "busy" },
+      }
+      const { manager, promptAsyncCalls } = createManager(true, sessionStatuses)
+      managerUnderTest = manager
       const taskA = createTask({ id: "task-a", parentSessionId: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
       const taskB = createTask({ id: "task-b", parentSessionId: "parent-1", description: "task B", status: "running" })
       getTasks(manager).set(taskA.id, taskA)
@@ -236,45 +410,148 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       await notifyParentSessionForTest(manager, taskB)
 
       // then
-      expect(promptAsyncCalls).toHaveLength(2)
-      expect(promptAsyncCalls[0]?.body.noReply).toBe(true)
-      expect(getCompletionTimers(manager).size).toBe(2)
-      const allCompleteCall = promptAsyncCalls[1]
-      expect(allCompleteCall).toBeDefined()
-      if (!allCompleteCall) {
-        throw new Error("Missing all-complete notification call")
-      }
+      expect(promptAsyncCalls).toHaveLength(0)
 
-      expect(allCompleteCall.body.noReply).toBe(false)
-      const allCompletePayload = JSON.stringify(allCompleteCall.body.parts)
-      expect(allCompletePayload).toContain("ALL BACKGROUND TASKS COMPLETE")
-      expect(allCompletePayload).toContain(OMO_INTERNAL_INITIATOR_MARKER)
-      expect(allCompletePayload).toContain(taskA.id)
-      expect(allCompletePayload).toContain(taskB.id)
-      expect(allCompletePayload).toContain(taskA.description)
-      expect(allCompletePayload).toContain(taskB.description)
+      // when
+      sessionStatuses["parent-1"] = { type: "idle" }
+      manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
+      await waitForDeferredWake(promptAsyncCalls)
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
+      const notificationPayload = JSON.stringify(promptAsyncCalls[0]?.body.parts)
+      expect(notificationPayload).toContain("BACKGROUND TASK COMPLETED")
+      expect(notificationPayload).toContain("ALL BACKGROUND TASKS COMPLETE")
+      expect(notificationPayload).toContain(taskA.id)
+      expect(notificationPayload).toContain(taskB.id)
     })
 
-    test("#when parent session is busy #then all-complete notification keeps the direct 4.0.0 parent prompt behavior", async () => {
+    test("#when retry no-reply notification batches with final completion #then idle flush sends one reply wake", async () => {
       // given
       const sessionStatuses: Record<string, { type: string }> = {
         "parent-1": { type: "busy" },
       }
       const { manager, promptAsyncCalls } = createManager(true, sessionStatuses)
       managerUnderTest = manager
-      const task = createTask({ id: "task-a", parentSessionId: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const queuePendingParentWake = Reflect.get(manager, "queuePendingParentWake") as (
+        sessionID: string,
+        notification: string,
+        promptContext: Record<string, unknown>,
+        shouldReply: boolean,
+        delayMs?: number,
+      ) => void
+      queuePendingParentWake.call(
+        manager,
+        "parent-1",
+        "<system-reminder>\n[BACKGROUND TASK RETRYING]\n</system-reminder>",
+        {},
+        false,
+        0,
+      )
+      const task = createTask({
+        id: "task-a",
+        parentSessionId: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-03-11T00:02:00.000Z"),
+      })
       getTasks(manager).set(task.id, task)
       getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
 
       // when
       await notifyParentSessionForTest(manager, task)
+      sessionStatuses["parent-1"] = { type: "idle" }
+      manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
+      await waitForDeferredWake(promptAsyncCalls)
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
+      const notificationPayload = JSON.stringify(promptAsyncCalls[0]?.body.parts)
+      expect(notificationPayload).toContain("BACKGROUND TASK RETRYING")
+      expect(notificationPayload).toContain("ALL BACKGROUND TASKS COMPLETE")
+    })
+
+    test("#when parent status is idle but latest assistant turn is still waiting on tool results #then background completion does not fork a reply", async () => {
+      // given
+      const sessionStatuses: Record<string, { type: string }> = {
+        "parent-1": { type: "idle" },
+      }
+      const sessionMessages: SessionMessageForTest[] = [
+        {
+          info: { role: "user", time: { created: 1778819814009 } },
+          parts: [{ type: "text" }],
+        },
+        {
+          info: { role: "assistant", finish: "tool-calls", time: { created: 1778819997535 } },
+          parts: [{ type: "tool" }],
+        },
+      ]
+      const { manager, promptAsyncCalls } = createManager(true, sessionStatuses, undefined, sessionMessages)
+      managerUnderTest = manager
+      const task = createTask({
+        id: "task-a",
+        parentSessionId: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-05-15T13:40:19.368Z"),
+      })
+      getTasks(manager).set(task.id, task)
+      getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
+
+      // when
+      await notifyParentSessionForTest(manager, task)
+      await waitForCoalescedFlush()
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(0)
+    })
+
+    test("#when stale tool-call history keeps blocking an all-complete wake #then completion eventually wakes the parent", async () => {
+      // given
+      const sessionStatuses: Record<string, { type: string }> = {
+        "parent-1": { type: "idle" },
+      }
+      const sessionMessages: SessionMessageForTest[] = [
+        {
+          info: { role: "user", time: { created: 1778819814009 } },
+          parts: [{ type: "text" }],
+        },
+        {
+          info: { role: "assistant", finish: "tool-calls", time: { created: 1778819997535 } },
+          parts: [{ type: "tool" }],
+        },
+      ]
+      const { manager, promptAsyncCalls } = createManager(true, sessionStatuses, undefined, sessionMessages)
+      managerUnderTest = manager
+      const task = createTask({
+        id: "task-a",
+        parentSessionId: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-05-15T13:40:19.368Z"),
+      })
+      getTasks(manager).set(task.id, task)
+      getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
+      await notifyParentSessionForTest(manager, task)
+      await waitForCoalescedFlush()
+      const pendingWake = getPendingParentWakes(manager).get("parent-1")
+      expect(pendingWake).toBeDefined()
+      if (!pendingWake) {
+        throw new Error("Missing pending parent wake")
+      }
+      pendingWake.toolCallDeferralStartedAt = Date.now() - 60_000
+
+      // when
+      manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
+      await waitForDeferredWake(promptAsyncCalls)
 
       // then
       expect(promptAsyncCalls).toHaveLength(1)
       expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
       const notificationPayload = JSON.stringify(promptAsyncCalls[0]?.body.parts)
       expect(notificationPayload).toContain("ALL BACKGROUND TASKS COMPLETE")
-      expect(notificationPayload).toContain(OMO_INTERNAL_INITIATOR_MARKER)
     })
 
     test("#when all-complete notification wakes parent #then prompt stays in the same OpenCode directory instance", async () => {
@@ -288,6 +565,7 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
 
       // when
       await notifyParentSessionForTest(manager, task)
+      await waitForCoalescedFlush()
 
       // then
       expect(promptAsyncCalls).toHaveLength(1)
@@ -295,7 +573,7 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       expect(promptAsyncCalls[0]?.query).toEqual({ directory })
     })
 
-    test("#when busy parent later becomes idle #then completion notification is not replayed as a second parent prompt", async () => {
+    test("#when busy parent later becomes idle #then completion notification wakes the parent once", async () => {
       // given
       const sessionStatuses: Record<string, { type: string }> = {
         "parent-1": { type: "busy" },
@@ -306,12 +584,12 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       getTasks(manager).set(task.id, task)
       getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
       await notifyParentSessionForTest(manager, task)
-      expect(promptAsyncCalls).toHaveLength(1)
+      expect(promptAsyncCalls).toHaveLength(0)
 
       // when
       sessionStatuses["parent-1"] = { type: "idle" }
       manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
-      await Promise.resolve()
+      await waitForDeferredWake(promptAsyncCalls)
 
       // then
       expect(promptAsyncCalls).toHaveLength(1)
@@ -321,7 +599,7 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       expect(notificationPayload).not.toContain("BACKGROUND TASK NOTIFICATION READY")
     })
 
-    test("#when a single background task finishes during a stale busy parent status #then no deferred wake is scheduled", async () => {
+    test("#when a single background task finishes during a stale busy parent status #then completion notification is retried after the parent becomes idle", async () => {
       // given
       const sessionStatuses: Record<string, { type: string }> = {
         "parent-1": { type: "busy" },
@@ -335,7 +613,7 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       // when
       await notifyParentSessionForTest(manager, task)
       sessionStatuses["parent-1"] = { type: "idle" }
-      await new Promise((resolve) => setTimeout(resolve, 1_180))
+      await waitForDeferredWakeRetry()
 
       // then
       expect(promptAsyncCalls).toHaveLength(1)
@@ -345,7 +623,7 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       expect(notificationPayload).not.toContain("BACKGROUND TASK NOTIFICATION READY")
     })
 
-    test("#when completion notification send is aborted #then notification is queued for the next user message", async () => {
+    test("#when completion notification send is aborted #then parent wake is requeued for retry", async () => {
       // given
       const sessionStatuses: Record<string, { type: string }> = {
         "parent-1": { type: "busy" },
@@ -362,10 +640,15 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
 
       // when
       await notifyParentSessionForTest(manager, task)
+      sessionStatuses["parent-1"] = { type: "idle" }
+      manager.handleEvent({ type: "session.idle", properties: { sessionID: "parent-1" } })
+      await waitForDeferredWake(promptAsyncCalls)
+      await waitForRequeuedParentWake(manager, "parent-1")
 
       // then
       expect(promptAsyncCalls).toHaveLength(1)
-      const queuedNotifications = getPendingNotifications(manager).get("parent-1") ?? []
+      expect(getPendingNotifications(manager).get("parent-1")).toBeUndefined()
+      const queuedNotifications = getPendingParentWakes(manager).get("parent-1")?.notifications ?? []
       expect(queuedNotifications).toHaveLength(1)
       expect(queuedNotifications[0]).toContain("ALL BACKGROUND TASKS COMPLETE")
       expect(queuedNotifications[0]).not.toContain("BACKGROUND TASK NOTIFICATION READY")

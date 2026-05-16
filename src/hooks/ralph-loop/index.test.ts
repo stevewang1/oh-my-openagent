@@ -871,6 +871,24 @@ describe("ralph-loop", () => {
       expect(state?.iteration).toBe(2)
     })
 
+    test("#given duplicate real idle fires before assistant activity #then loop state is preserved without another prompt", async () => {
+      // given - active loop
+      const hook = createRalphLoopHook(createMockPluginInput(), { idleSettleMs: 0 })
+      hook.startLoop("session-123", "Build feature", { maxIterations: 5 })
+
+      // when - duplicate idle events arrive without any intervening activity
+      await hook.event({
+        event: { type: "session.idle", properties: { sessionID: "session-123" } },
+      })
+      await hook.event({
+        event: { type: "session.idle", properties: { sessionID: "session-123" } },
+      })
+
+      // then - the second dispatch is deferred, not treated as loop failure
+      expect(hook.getState()?.iteration).toBe(2)
+      expect(promptCalls.length).toBe(1)
+    })
+
     test("should handle multiple iterations correctly", async () => {
       // given - active loop
       const hook = createRalphLoopHook(createMockPluginInput())
@@ -879,6 +897,9 @@ describe("ralph-loop", () => {
       // when - multiple idle events
       await hook.event({
         event: { type: "session.idle", properties: { sessionID: "session-123" } },
+      })
+      await hook.event({
+        event: { type: "message.part.updated", properties: { sessionID: "session-123" } },
       })
       await hook.event({
         event: { type: "session.idle", properties: { sessionID: "session-123" } },
@@ -1128,6 +1149,9 @@ describe("ralph-loop", () => {
         event: { type: "session.idle", properties: { sessionID: "session-A" } },
       })
       await hook.event({
+        event: { type: "message.part.updated", properties: { sessionID: "session-A" } },
+      })
+      await hook.event({
         event: { type: "session.idle", properties: { sessionID: "session-A" } },
       })
       expect(hook.getState()?.iteration).toBe(3)
@@ -1289,6 +1313,52 @@ Original task: Build something`
       const verificationToast = toastCalls.find(t => t.title === "ULTRAWORK LOOP")
       expect(verificationToast).toBeDefined()
       expect(verificationToast!.message).toMatch(/Oracle verification is now required/)
+    })
+
+    test("#given loop-start message count resolves late after progress #when ulw DONE appears #then oracle verification still starts", async () => {
+      // given - the initial message-count request is delayed past the first continuation
+      let messageCallCount = 0
+      let resolveInitialMessages: ((value: { data: typeof mockSessionMessages }) => void) | undefined
+      const delayedMock = createMockPluginInput()
+      Object.defineProperty(delayedMock.client.session, "messages", {
+        value: async (opts: { path: { id: string } }) => {
+          messagesCalls.push({ sessionID: opts.path.id })
+          messageCallCount += 1
+          if (messageCallCount === 1) {
+            return new Promise<{ data: typeof mockSessionMessages }>((resolve) => {
+              resolveInitialMessages = resolve
+            })
+          }
+
+          return { data: mockSessionMessages }
+        },
+      })
+      const hook = createRalphLoopHook(delayedMock, {
+        getTranscriptPath: () => join(TEST_DIR, "missing-transcript.jsonl"),
+        idleSettleMs: 0,
+      })
+      hook.startLoop("session-123", "Build API", { ultrawork: true })
+
+      await hook.event({ event: { type: "session.idle", properties: { sessionID: "session-123" } } })
+      expect(hook.getState()?.iteration).toBe(2)
+
+      mockSessionMessages = [
+        {
+          info: { role: "assistant" },
+          parts: [{ type: "text", text: "All work is complete. <promise>DONE</promise>" }],
+        },
+      ]
+
+      // when - delayed start snapshot resolves after the loop has already advanced
+      resolveInitialMessages?.({ data: mockSessionMessages })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await hook.event({ event: { type: "message.part.updated", properties: { sessionID: "session-123" } } })
+      await hook.event({ event: { type: "session.idle", properties: { sessionID: "session-123" } } })
+
+      // then - the late snapshot must not hide the DONE message from verification gating
+      expect(hook.getState()?.verification_pending).toBe(true)
+      expect(hook.getState()?.completion_promise).toBe("VERIFIED")
+      expect(promptCalls[promptCalls.length - 1]?.text).toContain('task(subagent_type="oracle"')
     })
 
     test("should show regular completion toast when ultrawork disabled", async () => {
