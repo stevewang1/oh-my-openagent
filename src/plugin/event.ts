@@ -43,7 +43,7 @@ import { buildTeamIdleWakeHintClient } from "./build-team-idle-wake-hint-client"
 import { createTeamLeadOrphanHandler } from "../hooks/team-session-events/team-lead-orphan-handler";
 import { createTeamMemberErrorHandler } from "../hooks/team-session-events/team-member-error-handler";
 import { createTeamMemberStatusHandler } from "../hooks/team-session-events/team-member-status-handler";
-import { promptAfterSessionIdle, promptAsyncAfterSessionIdle, releasePromptAsyncReservation } from "../hooks/shared/prompt-async-gate";
+import { dispatchInternalPrompt, releasePromptAsyncReservation } from "../hooks/shared/prompt-async-gate";
 
 import type { CreatedHooks } from "../create-hooks";
 import type { Managers } from "../create-managers";
@@ -377,6 +377,19 @@ export function createEventHandler(args: {
     return true;
   };
 
+  const recoverInterruptedToolResultsOnIdleEvent = async (input: EventInput): Promise<boolean> => {
+    if (input.event.type !== "session.idle") {
+      return false;
+    }
+
+    const sessionID = getEventSessionID(input);
+    if (!sessionID || !hooks.sessionRecovery?.handleInterruptedToolResultsOnIdle) {
+      return false;
+    }
+
+    return hooks.sessionRecovery.handleInterruptedToolResultsOnIdle(sessionID);
+  };
+
   const getFallbackContinuationKeys = (fallbackContext?: FallbackContinuationContext): FallbackContinuationDedupeKeys => {
     const agentKey = fallbackContext?.agentName
       ? getAgentConfigKey(fallbackContext.agentName).trim().toLowerCase()
@@ -497,7 +510,8 @@ export function createEventHandler(args: {
       };
 
       if (typeof pluginContext.client.session.promptAsync === "function") {
-        const promptResult = await promptAsyncAfterSessionIdle({
+        const promptResult = await dispatchInternalPrompt({
+          mode: "async",
           client: pluginContext.client,
           sessionID,
           source: `model-fallback:${source}`,
@@ -514,7 +528,8 @@ export function createEventHandler(args: {
         return;
       }
 
-      const promptResult = await promptAfterSessionIdle({
+      const promptResult = await dispatchInternalPrompt({
+        mode: "sync",
         client: pluginContext.client,
         sessionID,
         source: `model-fallback:${source}:sync`,
@@ -549,6 +564,7 @@ export function createEventHandler(args: {
       now: Date.now(),
       dedupWindowMs: DEDUP_WINDOW_MS,
     });
+    const syntheticIdle = normalizeSessionStatusToIdle(input);
 
     if (input.event.type === "session.idle") {
       const sessionID = getEventSessionID(input);
@@ -564,16 +580,27 @@ export function createEventHandler(args: {
             recentAnyIdles.delete(sessionID);
           }
         }
+      }
+      const recovered = await recoverInterruptedToolResultsOnIdleEvent(input);
+      if (recovered) {
+        return;
+      }
+      if (sessionID) {
+        const now = Date.now();
         recentRealIdles.set(sessionID, now);
         if (!shouldDispatchIdleEvent(sessionID, now)) {
           return;
         }
       }
+    } else if (syntheticIdle) {
+      const recovered = await recoverInterruptedToolResultsOnIdleEvent(syntheticIdle as EventInput);
+      if (recovered) {
+        return;
+      }
     }
 
     await dispatchToHooks(input);
 
-    const syntheticIdle = normalizeSessionStatusToIdle(input);
     if (syntheticIdle) {
       const sessionID = (syntheticIdle.event.properties as Record<string, unknown>)?.sessionID as string;
       const now = Date.now();
@@ -917,7 +944,8 @@ export function createEventHandler(args: {
                 log("[event] compaction before recovery continue failed:", { sessionID, error: err });
               });
 
-            const promptResult = await promptAfterSessionIdle({
+            const promptResult = await dispatchInternalPrompt({
+              mode: "sync",
               client: pluginContext.client,
               sessionID,
               source: "session-recovery:post-compaction-continue",
