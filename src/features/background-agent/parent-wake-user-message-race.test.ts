@@ -6,6 +6,10 @@ type PromptAsyncCall = {
   path: { id: string }
   body: {
     noReply?: boolean
+    agent?: string
+    model?: { providerID: string; modelID: string }
+    variant?: string
+    tools?: Record<string, boolean>
     parts?: unknown[]
   }
   query?: {
@@ -40,9 +44,7 @@ function createNotifier(args: {
       },
       abort: async () => ({ data: {} }),
     },
-  } as unknown as Parameters<typeof ParentWakeNotifier>[0] extends never
-    ? never
-    : ConstructorParameters<typeof ParentWakeNotifier>[0]["client"]
+  } as unknown as ConstructorParameters<typeof ParentWakeNotifier>[0]["client"]
 
   const notifier = new ParentWakeNotifier(
     {
@@ -65,6 +67,155 @@ function createNotifier(args: {
 }
 
 describe("ParentWakeNotifier — user message race guard (issue #4120)", () => {
+  test("#given user message was created exactly at the race-window boundary #when flushing pending wake #then dispatch is still deferred", async () => {
+    // given
+    const originalDateNow = Date.now
+    Date.now = () => 10_000
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessages: [
+        {
+          info: {
+            role: "user",
+            time: { created: 8_000 },
+          },
+        },
+      ],
+      userMessageInProgressWindowMs: 2_000,
+    })
+    notifier.queuePendingParentWake(
+      "parent-boundary",
+      "task complete",
+      { agent: "sisyphus" },
+      true,
+    )
+
+    try {
+      // when
+      await notifier.flushPendingParentWake("parent-boundary")
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(0)
+      expect(notifier.getPendingParentWakes().has("parent-boundary")).toBe(true)
+    } finally {
+      Date.now = originalDateNow
+      notifier.shutdown()
+      releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given user message is just outside the race-window boundary #when flushing pending wake #then dispatch proceeds", async () => {
+    // given
+    const originalDateNow = Date.now
+    Date.now = () => 10_001
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessages: [
+        {
+          info: {
+            role: "user",
+            time: { created: 8_000 },
+          },
+        },
+      ],
+      userMessageInProgressWindowMs: 2_000,
+    })
+    notifier.queuePendingParentWake(
+      "parent-boundary-open",
+      "task complete",
+      { agent: "sisyphus" },
+      true,
+    )
+
+    try {
+      // when
+      await notifier.flushPendingParentWake("parent-boundary-open")
+
+      // then
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(notifier.getPendingParentWakes().has("parent-boundary-open")).toBe(false)
+    } finally {
+      Date.now = originalDateNow
+      notifier.shutdown()
+      releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given two flushes race for one pending wake #when both reach the prompt gate #then the skipped duplicate is not requeued", async () => {
+    // given
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessages: [
+        {
+          info: {
+            role: "assistant",
+            finish: "stop",
+            time: { created: Date.now() - 10_000 },
+          },
+        },
+      ],
+    })
+    notifier.queuePendingParentWake(
+      "parent-concurrent",
+      "task complete",
+      { agent: "sisyphus" },
+      true,
+    )
+
+    // when
+    await Promise.all([
+      notifier.flushPendingParentWake("parent-concurrent"),
+      notifier.flushPendingParentWake("parent-concurrent"),
+    ])
+
+    // then
+    expect(promptAsyncCalls).toHaveLength(1)
+    expect(notifier.getPendingParentWakes().has("parent-concurrent")).toBe(false)
+    expect(notifier.getPendingParentWakeTimers().has("parent-concurrent")).toBe(false)
+
+    notifier.shutdown()
+    releaseAllPromptAsyncReservationsForTesting()
+  })
+
+  test("#given burst notifications share a parent session #when the pending wake flushes #then one dispatch drains the coalesced wake", async () => {
+    // given
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessages: [
+        {
+          info: {
+            role: "assistant",
+            finish: "stop",
+            time: { created: Date.now() - 10_000 },
+          },
+        },
+      ],
+    })
+    notifier.queuePendingParentWake(
+      "parent-burst",
+      "task one complete",
+      { agent: "sisyphus" },
+      false,
+    )
+    notifier.queuePendingParentWake(
+      "parent-burst",
+      "task two complete",
+      { agent: "sisyphus" },
+      true,
+    )
+
+    // when
+    await Promise.all([
+      notifier.flushPendingParentWake("parent-burst"),
+      notifier.flushPendingParentWake("parent-burst"),
+    ])
+
+    // then
+    expect(promptAsyncCalls).toHaveLength(1)
+    expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
+    expect(notifier.getPendingParentWakes().has("parent-burst")).toBe(false)
+    expect(notifier.getPendingParentWakeTimers().has("parent-burst")).toBe(false)
+
+    notifier.shutdown()
+    releaseAllPromptAsyncReservationsForTesting()
+  })
+
   test("#given latest message is a user message just added #when flushing pending wake #then dispatch is deferred (no promptAsync)", async () => {
     // given
     const { notifier, promptAsyncCalls } = createNotifier({
@@ -134,6 +285,49 @@ describe("ParentWakeNotifier — user message race guard (issue #4120)", () => {
     // then
     expect(promptAsyncCalls).toHaveLength(1)
     expect(promptAsyncCalls[0]?.path.id).toBe("parent-2")
+
+    notifier.shutdown()
+    releaseAllPromptAsyncReservationsForTesting()
+  })
+
+  test("#given pending wake has parent prompt context #when flushing #then promptAsync receives the context", async () => {
+    // given
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessages: [
+        {
+          info: {
+            role: "assistant",
+            finish: "stop",
+            time: { created: Date.now() - 100 },
+          },
+        },
+      ],
+    })
+    notifier.queuePendingParentWake(
+      "parent-context",
+      "task retrying",
+      {
+        agent: "hephaestus",
+        model: { providerID: "openai", modelID: "gpt-5" },
+        variant: "xhigh",
+        tools: { bash: true, edit: false },
+      },
+      false,
+    )
+
+    // when
+    await notifier.flushPendingParentWake("parent-context")
+
+    // then
+    expect(promptAsyncCalls).toHaveLength(1)
+    expect(promptAsyncCalls[0]?.body).toMatchObject({
+      noReply: true,
+      agent: "hephaestus",
+      model: { providerID: "openai", modelID: "gpt-5" },
+      variant: "xhigh",
+      tools: { bash: true, edit: false },
+    })
+    expect(promptAsyncCalls[0]?.body.parts).toHaveLength(1)
 
     notifier.shutdown()
     releaseAllPromptAsyncReservationsForTesting()
