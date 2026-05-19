@@ -4,8 +4,9 @@ import { type ToolDefinition, tool } from "@opencode-ai/plugin/tool"
 import { z } from "zod"
 
 import type { TeamModeConfig } from "../../../config/schema/team-mode"
-import { dispatchInternalPrompt } from "../../../hooks/shared/prompt-async-gate"
+import { dispatchInternalPrompt, isInternalPromptDispatchAccepted } from "../../../hooks/shared/prompt-async-gate"
 import { log } from "../../../shared/logger"
+import { isAmbiguousPromptDispatchFailure } from "../../../shared/prompt-failure-classifier"
 import { applyMemberSessionRouting, buildMemberPromptBody } from "../member-session-routing"
 import { buildEnvelope } from "../team-mailbox/poll"
 import {
@@ -15,7 +16,7 @@ import {
 import { BroadcastNotPermittedError, sendMessage } from "../team-mailbox/send"
 import { lookupTeamSession } from "../team-session-registry"
 import { loadRuntimeState, transitionRuntimeState } from "../team-state-store/store"
-import type { Message } from "../types"
+import type { Message, RuntimeState } from "../types"
 import { MessageSchema } from "../types"
 
 const MESSAGE_TOOL_KINDS = ["message", "announcement"] as const
@@ -67,6 +68,14 @@ const TeamSendMessageArgsSchema = z.object({
 })
 
 type DeliveryReservation = Awaited<ReturnType<typeof reserveMessageForDelivery>>
+type RuntimeMember = RuntimeState["members"][number]
+
+function canPreReserveForLiveDelivery(member: RuntimeMember, senderName: string): boolean {
+  return member.name !== senderName
+    && member.sessionId !== undefined
+    && member.status === "idle"
+    && member.pendingInjectedMessageIds.length === 0
+}
 
 async function resolveTeamRuntimeDetails(
   teamRunId: string,
@@ -152,6 +161,22 @@ async function markLiveDeliveryPending(
   }), config)
 }
 
+async function releaseReservationsForRecipients(
+  teamRunId: string,
+  recipientNames: readonly string[],
+  messageId: string,
+  config: TeamModeConfig,
+): Promise<void> {
+  for (const recipientName of recipientNames) {
+    const reservation = await reserveMessageForDelivery(teamRunId, recipientName, messageId, config)
+    await releaseReservationSafely(reservation, {
+      teamRunId,
+      recipient: recipientName,
+      messageId,
+    })
+  }
+}
+
 async function deliverLive(
   client: LiveDeliveryClient,
   message: Message,
@@ -161,7 +186,19 @@ async function deliverLive(
   directory: string,
   deps: TeamSendMessageToolDeps,
 ): Promise<void> {
-  const runtimeState = await deps.loadRuntimeState(teamRunId, config)
+  let runtimeState: RuntimeState
+  try {
+    runtimeState = await deps.loadRuntimeState(teamRunId, config)
+  } catch (error) {
+    await releaseReservationsForRecipients(teamRunId, deliveredTo, message.messageId, config)
+    log("[team-mailbox] live delivery unavailable after pre-reserve, released recipients to inbox", {
+      teamRunId,
+      messageId: message.messageId,
+      deliveredTo,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return
+  }
   const envelope = buildEnvelope(message)
 
   for (const recipientName of deliveredTo) {
@@ -172,6 +209,31 @@ async function deliverLive(
 
     const recipientMember = runtimeState.members.find((entry) => entry.name === recipientName)
     if (!recipientMember) {
+      await releaseReservationSafely(reservation, {
+        teamRunId,
+        recipient: recipientName,
+        messageId: message.messageId,
+      })
+      continue
+    }
+
+    if (recipientMember.pendingInjectedMessageIds.length > 0) {
+      await releaseReservationSafely(reservation, {
+        teamRunId,
+        recipient: recipientName,
+        messageId: message.messageId,
+      })
+      continue
+    }
+
+    if (recipientMember.status !== "idle") {
+      log("[team-mailbox] live delivery unavailable, recipient is not idle", {
+        reason: "recipient-not-idle",
+        teamRunId,
+        recipient: recipientName,
+        status: recipientMember.status,
+        messageId: message.messageId,
+      })
       await releaseReservationSafely(reservation, {
         teamRunId,
         recipient: recipientName,
@@ -204,13 +266,36 @@ async function deliverLive(
         client,
         sessionID: recipientSessionId,
         source: "team-live-delivery",
+        queueBehavior: "defer",
         input: {
           path: { id: recipientSessionId },
           body: buildMemberPromptBody(recipientMember, envelope),
           query: { directory: recipientMember.worktreePath ?? directory },
         },
       })
-      if (promptResult.status !== "dispatched") {
+      if (promptResult.status === "failed" && isAmbiguousPromptDispatchFailure(promptResult.error)) {
+        try {
+          await markLiveDeliveryPending(teamRunId, recipientName, message.messageId, config)
+        } catch (markError) {
+          log("[team-mailbox] live delivery prompt may be accepted but pending mark failed, keeping reservation hidden", {
+            teamRunId,
+            recipient: recipientName,
+            recipientSessionId,
+            messageId: message.messageId,
+            error: markError instanceof Error ? markError.message : String(markError),
+          })
+          continue
+        }
+        log("[team-mailbox] live delivery prompt failed after dispatch attempt, keeping reservation pending", {
+          teamRunId,
+          recipient: recipientName,
+          recipientSessionId,
+          messageId: message.messageId,
+          error: promptResult.error instanceof Error ? promptResult.error.message : String(promptResult.error),
+        })
+        continue
+      }
+      if (!isInternalPromptDispatchAccepted(promptResult)) {
         log("[team-mailbox] live delivery skipped by promptAsync gate, falling back to inbox injection", {
           status: promptResult.status,
           teamRunId,
@@ -225,7 +310,18 @@ async function deliverLive(
         })
         continue
       }
-      await markLiveDeliveryPending(teamRunId, recipientName, message.messageId, config)
+      try {
+        await markLiveDeliveryPending(teamRunId, recipientName, message.messageId, config)
+      } catch (markError) {
+        log("[team-mailbox] live delivery prompt dispatched but pending mark failed, keeping reservation hidden", {
+          teamRunId,
+          recipient: recipientName,
+          recipientSessionId,
+          messageId: message.messageId,
+          error: markError instanceof Error ? markError.message : String(markError),
+        })
+        continue
+      }
       log("[team-mailbox] live delivery reserved until recipient idle", {
         teamRunId,
         recipient: recipientName,
@@ -303,7 +399,7 @@ export function createTeamSendMessageTool(
       const runtimeState = await deps.loadRuntimeState(teamRuntime.teamRunId, config)
       const reservedRecipients = new Set<string>(
         runtimeState.members
-          .filter((member) => member.sessionId !== undefined && member.name !== teamRuntime.senderName)
+          .filter((member) => canPreReserveForLiveDelivery(member, teamRuntime.senderName))
           .map((member) => member.name),
       )
 

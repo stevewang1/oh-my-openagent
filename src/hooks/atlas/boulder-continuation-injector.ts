@@ -6,7 +6,8 @@ import {
 import { stripAgentListSortPrefix } from "../../shared/agent-display-names"
 import { log } from "../../shared/logger"
 import { createInternalAgentContinuationTextPart, resolveInheritedPromptTools } from "../../shared"
-import { dispatchInternalPrompt } from "../shared/prompt-async-gate"
+import { isAmbiguousPromptDispatchFailure } from "../../shared/prompt-failure-classifier"
+import { dispatchInternalPrompt, isInternalPromptDispatchAccepted } from "../shared/prompt-async-gate"
 import { HOOK_NAME } from "./hook-name"
 import { BOULDER_CONTINUATION_PROMPT } from "./system-reminder-templates"
 import { markContinuationInjectedAwaitingToolProgress } from "./tool-progress"
@@ -99,6 +100,7 @@ export async function injectBoulderContinuation(input: {
       sessionID,
       source: HOOK_NAME,
       settleMs: idleSettleMs,
+      queueBehavior: "defer",
       input: {
         path: { id: sessionID },
         body: {
@@ -114,7 +116,7 @@ export async function injectBoulderContinuation(input: {
     if (promptResult.status === "failed") {
       throw promptResult.error
     }
-    if (promptResult.status !== "dispatched") {
+    if (!isInternalPromptDispatchAccepted(promptResult)) {
       log(`[${HOOK_NAME}] Boulder continuation skipped by promptAsync gate`, {
         sessionID,
         status: promptResult.status,
@@ -127,6 +129,15 @@ export async function injectBoulderContinuation(input: {
     log(`[${HOOK_NAME}] Boulder continuation injected`, { sessionID })
     return "injected"
   } catch (err) {
+    if (isAmbiguousPromptDispatchFailure(err)) {
+      sessionState.promptFailureCount = 0
+      markContinuationInjectedAwaitingToolProgress(sessionState)
+      log(`[${HOOK_NAME}] Boulder continuation prompt failed after dispatch may have been accepted`, {
+        sessionID,
+        error: String(err),
+      })
+      return "injected"
+    }
     sessionState.promptFailureCount += 1
     sessionState.lastFailureAt = Date.now()
     log(`[${HOOK_NAME}] Boulder continuation failed`, {

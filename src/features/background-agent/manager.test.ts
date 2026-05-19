@@ -6,7 +6,7 @@ import {
   clearAllDelegatedChildSessionBootstrap,
   getDelegatedChildSessionBootstrap,
 } from "../../shared/delegated-child-session-bootstrap"
-import { dispatchInternalPrompt } from "../../shared/prompt-async-gate"
+import { dispatchInternalPrompt, releaseAllPromptAsyncReservationsForTesting } from "../../shared/prompt-async-gate"
 import { clearSessionPromptParams, getSessionPromptParams } from "../../shared/session-prompt-params-state"
 import {
   getSessionAgent,
@@ -26,6 +26,7 @@ afterAll(() => { mock.restore() })
 
 afterEach(() => {
   clearBackgroundTaskRegistryForTesting()
+  releaseAllPromptAsyncReservationsForTesting()
 })
 
 const TASK_TTL_MS = 30 * 60 * 1000
@@ -5703,6 +5704,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
           {
             info: {
               role: "assistant",
+              finish: "end_turn",
               time: { created: 2_000 },
             },
             parts: [{ type: "text", text: "wake was already accepted" }],
