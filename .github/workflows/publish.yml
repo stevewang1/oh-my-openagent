@@ -61,7 +61,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [test, typecheck]
-    if: github.repository == 'newtype-01/newtype-profile'
+    if: github.repository == 'newtype-01/newtype-os'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +76,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@latest
@@ -128,6 +129,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           CI: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
 
       - name: Delete draft release
@@ -140,6 +142,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           VERSION=$(jq -r '.version' package.json)
-          git checkout master
-          git reset --hard "v${VERSION}"
+          git checkout -B master "v${VERSION}"
           git push -f origin master
