@@ -2,6 +2,11 @@ import type { DelegateTaskArgs, ToolContextWithMetadata } from "./types"
 import { SISYPHUS_JUNIOR_AGENT } from "./sisyphus-junior-agent"
 import { log } from "../../shared/logger"
 
+function ignoreLoadSkillsParseError(error: unknown): void {
+  if (error instanceof Error) return
+  throw error
+}
+
 export async function prepareDelegateTaskArgs(args: Record<string, unknown>, ctx: ToolContextWithMetadata): Promise<DelegateTaskArgs> {
   const category = typeof args.category === "string" ? args.category : undefined
   const prompt = typeof args.prompt === "string" ? args.prompt : ""
@@ -47,7 +52,8 @@ export async function prepareDelegateTaskArgs(args: Record<string, unknown>, ctx
     try {
       const parsed = JSON.parse(loadSkills)
       loadSkills = Array.isArray(parsed) ? parsed : []
-    } catch {
+    } catch (error) {
+      ignoreLoadSkillsParseError(error)
       loadSkills = []
     }
   }
@@ -81,15 +87,6 @@ export async function prepareDelegateTaskArgs(args: Record<string, unknown>, ctx
   const taskID = typeof args.task_id === "string" ? args.task_id : undefined
   const command = typeof args.command === "string" ? args.command : undefined
 
-  args.category = category
-  args.subagent_type = subagentType
-  args.requested_subagent_type = originalSubagentType
-  args.description = description
-  args.prompt = prompt
-  args.run_in_background = runInBackground
-  args.task_id = taskID
-  args.command = command
-  args.load_skills = normalizedLoadSkills
 
   return {
     category,

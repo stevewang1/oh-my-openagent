@@ -12,8 +12,8 @@ describe("rules formatter hook context", () => {
 	it("#given multiline dynamic rules #when formatting PostToolUse context #then labels and bodies render on separate lines", () => {
 		// given
 		const rule = loadedRule({
-			path: "/repo/packages/AGENTS.md",
-			relativePath: "packages/AGENTS.md",
+			path: "/repo/packages/CONTEXT.md",
+			relativePath: "packages/CONTEXT.md",
 			body: ["# packages", "", "## OVERVIEW", "23 sibling packages.", "", "## CONVENTIONS", "Use npm."].join("\n"),
 		});
 
@@ -29,7 +29,7 @@ describe("rules formatter hook context", () => {
 			[
 				"Additional project instructions matched for packages/omo-codex/plugin/components/ulw-loop/src/paths.ts:",
 				"",
-				"Instructions from: /repo/packages/AGENTS.md",
+				"Instructions from: /repo/packages/CONTEXT.md",
 				"",
 				"# packages",
 				"",
@@ -42,11 +42,11 @@ describe("rules formatter hook context", () => {
 		);
 	});
 
-	it("#given static rules #when formatting SessionStart context #then it avoids leading blank lines", () => {
+	it("#given static rules #when formatting SessionStart context #then it lists files to read without rule bodies", () => {
 		// given
 		const rule = loadedRule({
-			path: "/repo/AGENTS.md",
-			relativePath: "AGENTS.md",
+			path: "/repo/CONTEXT.md",
+			relativePath: "CONTEXT.md",
 			body: "Keep generated hook context readable.",
 		});
 
@@ -55,14 +55,9 @@ describe("rules formatter hook context", () => {
 
 		// then
 		expect(block).toBe(
-			[
-				"## Project Instructions",
-				"",
-				"Instructions from: /repo/AGENTS.md",
-				"",
-				"Keep generated hook context readable.",
-			].join("\n"),
+			["## Project Instructions", "", "must read project rules:", "- [CONTEXT.md]{/repo/CONTEXT.md}"].join("\n"),
 		);
+		expect(block).not.toContain("Keep generated hook context readable.");
 	});
 
 	it("#given CRLF and bare CR rule bodies #when formatting context #then it normalizes line endings", () => {
@@ -79,16 +74,16 @@ describe("rules formatter hook context", () => {
 		expect(block).not.toContain("\r");
 	});
 
-	it("#given duplicate static rules with different line endings #when formatting context #then it renders one copy", () => {
+	it("#given duplicate static rules with different line endings #when formatting context #then it lists one file to read", () => {
 		// given
 		const lfRule = loadedRule({
-			path: "/repo/AGENTS.md",
-			relativePath: "AGENTS.md",
+			path: "/repo/CONTEXT.md",
+			relativePath: "CONTEXT.md",
 			body: "Shared rule\nKeep one copy.",
 		});
 		const crlfRule = loadedRule({
-			path: "/repo/packages/AGENTS.md",
-			relativePath: "packages/AGENTS.md",
+			path: "/repo/packages/CONTEXT.md",
+			relativePath: "packages/CONTEXT.md",
 			body: "Shared rule\r\nKeep one copy.",
 		});
 
@@ -96,8 +91,52 @@ describe("rules formatter hook context", () => {
 		const block = formatStaticBlock([lfRule, crlfRule], FORMAT_OPTIONS);
 
 		// then
-		expect(occurrenceCount(block, "Shared rule\nKeep one copy.")).toBe(1);
-		expect(block).not.toContain("/repo/packages/AGENTS.md");
+		expect(occurrenceCount(block, "- [CONTEXT.md]{/repo/CONTEXT.md}")).toBe(1);
+		expect(block).not.toContain("Shared rule\nKeep one copy.");
+		expect(block).not.toContain("/repo/packages/CONTEXT.md");
+	});
+
+	it("#given a Hephaestus static rule #when formatting SessionStart context #then it expands inline before other rule links", () => {
+		// given
+		const rules = [
+			loadedRule({ path: "/repo/alpha.md", relativePath: "alpha.md", body: "Alpha guidance." }),
+			loadedRule({
+				path: "/repo/bundled-rules/hephaestus.md",
+				relativePath: "bundled-rules/hephaestus.md",
+				body: "Hephaestus guidance.",
+			}),
+			loadedRule({ path: "/repo/beta.md", relativePath: "beta.md", body: "Beta guidance." }),
+		];
+
+		// when
+		const block = formatStaticBlock(rules, FORMAT_OPTIONS);
+
+		// then
+		expect(block).toContain("Instructions from: /repo/bundled-rules/hephaestus.md");
+		expect(block).toContain("Hephaestus guidance.");
+		expect(block).toContain("must read project rules:");
+		expect(block.indexOf("Hephaestus guidance.")).toBeLessThan(block.indexOf("must read project rules:"));
+		expect(block.indexOf("must read project rules:")).toBeLessThan(block.indexOf("- [alpha.md]{/repo/alpha.md}"));
+		expect(block.indexOf("- [alpha.md]{/repo/alpha.md}")).toBeLessThan(block.indexOf("- [beta.md]{/repo/beta.md}"));
+		expect(block).not.toContain("- [hephaestus.md]");
+	});
+
+	it("#given only a Hephaestus static rule #when formatting SessionStart context #then it emits no project rule link section", () => {
+		// given
+		const rule = loadedRule({
+			path: "/repo/bundled-rules/hephaestus.md",
+			relativePath: "bundled-rules/hephaestus.md",
+			body: "Hephaestus guidance.",
+		});
+
+		// when
+		const block = formatStaticBlock([rule], FORMAT_OPTIONS);
+
+		// then
+		expect(block).toContain("Instructions from: /repo/bundled-rules/hephaestus.md");
+		expect(block).toContain("Hephaestus guidance.");
+		expect(block).not.toContain("- [hephaestus.md]");
+		expect(block).not.toContain("must read project rules:");
 	});
 
 	it("#given multiple oversized rules #when formatting under a tight result budget #then every rule receives a fair truncated share with a read-full guide", () => {
@@ -145,9 +184,9 @@ function loadedRule(input: {
 	readonly source?: RuleSource;
 	readonly matchReason?: MatchReason;
 }): LoadedRule {
-	const path = input.path ?? "/repo/AGENTS.md";
-	const relativePath = input.relativePath ?? "AGENTS.md";
-	const source = input.source ?? "AGENTS.md";
+	const path = input.path ?? "/repo/CONTEXT.md";
+	const relativePath = input.relativePath ?? "CONTEXT.md";
+	const source = input.source ?? "CONTEXT.md";
 	return {
 		path,
 		realPath: path,

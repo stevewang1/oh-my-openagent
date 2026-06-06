@@ -19,6 +19,9 @@ function createDetectedConfig(): DetectedConfig {
     hasZaiCodingPlan: false,
     hasKimiForCoding: false,
     hasOpencodeGo: false,
+    hasBailianCodingPlan: false,
+    hasMinimaxCnCodingPlan: false,
+    hasMinimaxCodingPlan: false,
     hasVercelAiGateway: false,
   }
 }
@@ -101,7 +104,7 @@ describe("promptInstallConfig platform branching", () => {
 
   test("skips OpenCode questions when the user selects codex", async () => {
     // given
-    const selectSpy = spyOn(p, "select").mockResolvedValue(true)
+    const selectSpy = spyOn(p, "select").mockResolvedValue("no")
 
     // when
     const config = await prompts.promptInstallConfig(createDetectedConfig(), "codex")
@@ -113,11 +116,7 @@ describe("promptInstallConfig platform branching", () => {
       hasCodex: true,
       codexAutonomous: true,
     } satisfies Partial<InstallConfig>)
-    expect(selectSpy).toHaveBeenCalledTimes(1)
-    expect(selectSpy.mock.calls[0]?.[0]).toMatchObject({
-      initialValue: true,
-      options: [{ value: true }, { value: false }],
-    })
+    expect(selectSpy).not.toHaveBeenCalled()
   })
 
   test.each([
@@ -134,7 +133,7 @@ describe("promptInstallConfig platform branching", () => {
 
       // then
       expect(config).toMatchObject({ platform, hasOpenCode: true, hasCodex } satisfies Partial<InstallConfig>)
-      expect(selectSpy).toHaveBeenCalledTimes(hasCodex ? 10 : 9)
+      expect(selectSpy).toHaveBeenCalledTimes(12)
     },
   )
 

@@ -57,19 +57,34 @@ test("#given lazycodex runs through an npm bin symlink #when running the Node in
 	}
 });
 
-test("#given dry-run install flags #when running the Node installer entrypoint #then prints delegated codex install command", () => {
+test("#given dry-run install flags #when running the Node installer entrypoint #then prints delegated autonomous codex install command", () => {
 	// given
 	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
 
 	// when
 	const output = execFileSync(
 		process.execPath,
-		[scriptPath, "--dry-run", "install", "--no-tui", "--codex-autonomous"],
+		[scriptPath, "--dry-run", "install", "--no-tui"],
 		{ encoding: "utf8" },
 	).trim();
 
 	// then
 	assert.equal(output, "npx --yes --package oh-my-openagent omo install --platform=codex --no-tui --codex-autonomous");
+});
+
+test("#given dry-run install opt-out #when running the Node installer entrypoint #then preserves existing Codex permission settings", () => {
+	// given
+	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
+
+	// when
+	const output = execFileSync(
+		process.execPath,
+		[scriptPath, "--dry-run", "install", "--no-tui", "--no-codex-autonomous"],
+		{ encoding: "utf8" },
+	).trim();
+
+	// then
+	assert.equal(output, "npx --yes --package oh-my-openagent omo install --platform=codex --no-tui --no-codex-autonomous");
 });
 
 test("#given dry-run doctor #when running the Node installer entrypoint #then prints delegated doctor command", () => {
@@ -98,6 +113,70 @@ test("#given dry-run cleanup #when running the Node installer entrypoint #then p
 
 	// then
 	assert.equal(output, "npx --yes --package oh-my-openagent omo cleanup --platform=codex --project /tmp/lazycodex-qa");
+});
+
+test("#given dry-run uninstall #when running the Node installer entrypoint #then prints delegated codex cleanup command", () => {
+	// given
+	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
+
+	// when
+	const output = execFileSync(
+		process.execPath,
+		[scriptPath, "--dry-run", "uninstall", "--project", "/tmp/lazycodex-qa"],
+		{ encoding: "utf8" },
+	).trim();
+
+	// then
+	assert.equal(output, "npx --yes --package oh-my-openagent omo cleanup --platform=codex --project /tmp/lazycodex-qa");
+});
+
+test("#given stale lazycodex version #when running update dry-run #then prints the latest installer command", () => {
+	// given
+	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
+
+	// when
+	const output = execFileSync(process.execPath, [scriptPath, "--dry-run", "update"], {
+		encoding: "utf8",
+		env: {
+			...process.env,
+			LAZYCODEX_CURRENT_VERSION: "1.0.0",
+			LAZYCODEX_LATEST_VERSION: "1.0.1",
+		},
+	}).trim();
+
+	// then
+	assert.equal(output, "npx --yes lazycodex-ai@latest install --no-tui --codex-autonomous");
+});
+
+test("#given current lazycodex version #when running update dry-run #then reports already current", () => {
+	// given
+	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
+
+	// when
+	const output = execFileSync(process.execPath, [scriptPath, "--dry-run", "update"], {
+		encoding: "utf8",
+		env: {
+			...process.env,
+			LAZYCODEX_CURRENT_VERSION: "1.0.1",
+			LAZYCODEX_LATEST_VERSION: "1.0.1",
+		},
+	}).trim();
+
+	// then
+	assert.equal(output, "lazycodex-ai 1.0.1 is already up to date.");
+});
+
+test("#given dry-run ulw-loop #when running the Node installer entrypoint #then prints delegated ulw-loop command", () => {
+	// given
+	const scriptPath = fileURLToPath(new URL("./install-local.mjs", import.meta.url));
+
+	// when
+	const output = execFileSync(process.execPath, [scriptPath, "--dry-run", "ulw-loop", "help"], {
+		encoding: "utf8",
+	}).trim();
+
+	// then
+	assert.equal(output, "npx --yes --package oh-my-openagent omo ulw-loop help");
 });
 
 test("#given the invoking argv path disappears #when importing the Node installer module #then the entrypoint guard does not throw", () => {

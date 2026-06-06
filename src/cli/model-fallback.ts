@@ -41,8 +41,8 @@ function collectAvailableFallbacks(
 ): FallbackModelObject[] {
   const expandedFallbacks = fallbackChain.flatMap((entry) =>
     entry.providers
-      .filter((provider) => isProviderAvailable(provider, availability))
-      .map((provider) => toFallbackModelObject(entry, provider))
+      .filter((provider: string) => isProviderAvailable(provider, availability))
+      .map((provider: string) => toFallbackModelObject(entry, provider))
   )
   return expandedFallbacks.filter((entry, index, allEntries) =>
     allEntries.findIndex((candidate) =>
@@ -104,6 +104,9 @@ export function generateModelConfig(config: InstallConfig): GeneratedOmoConfig {
     avail.zai ||
     avail.kimiForCoding ||
     avail.opencodeGo ||
+    avail.bailianCodingPlan ||
+    avail.minimaxCnCodingPlan ||
+    avail.minimaxCodingPlan ||
     avail.vercelAiGateway
   if (!hasAnyProvider) {
     return {
@@ -139,15 +142,19 @@ export function generateModelConfig(config: InstallConfig): GeneratedOmoConfig {
       } else if (avail.native.claude) {
         agentConfig = { model: "anthropic/claude-haiku-4-5" }
       } else if (avail.opencodeZen) {
-        agentConfig = { model: "opencode/claude-haiku-4-5" }
+        agentConfig = { model: "opencode/gpt-5-nano" }
       } else if (avail.opencodeGo) {
         agentConfig = { model: "opencode-go/qwen3.5-plus" }
       } else if (avail.copilot) {
         agentConfig = { model: "github-copilot/gpt-5-mini" }
-      } else if (avail.vercelAiGateway) {
-        agentConfig = { model: "vercel/minimax/minimax-m2.7-highspeed" }
       } else {
-        agentConfig = { model: "opencode/gpt-5-nano" }
+        const resolved = resolveModelFromChain(req.fallbackChain, avail)
+        if (resolved) {
+          const variant = resolved.variant ?? req.variant
+          agentConfig = variant ? { model: resolved.model, variant } : { model: resolved.model }
+        } else {
+          agentConfig = { model: "opencode/gpt-5-nano" }
+        }
       }
       agents[role] = attachAllFallbackModels(agentConfig, req.fallbackChain, avail)
       continue

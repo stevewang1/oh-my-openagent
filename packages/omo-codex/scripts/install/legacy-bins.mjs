@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { COMMAND_SHIM_MARKER } from "./command-shim.mjs";
 
 const LEGACY_CODEX_COMPONENT_BINS = [
+	{ name: "omo", component: "ulw-loop" },
 	{ name: "codex-comment-checker", component: "comment-checker" },
+	{ name: "codex-lsp", component: "lsp" },
 	{ name: "codex-rules", component: "rules" },
 	{ name: "codex-start-work-continuation", component: "start-work-continuation" },
 	{ name: "codex-telemetry", component: "telemetry" },
@@ -45,13 +47,20 @@ function isManagedLegacyComponentTarget(target, component) {
 		suffix[1] === component &&
 		suffix[2] === "dist" &&
 		suffix[3] === "cli.js" &&
-		hasPluginCachePrefix(parts, suffixStart)
+		(hasPluginCachePrefix(parts, suffixStart) || hasOmoCodexPluginPrefix(parts, suffixStart))
 	);
 }
 
 function hasPluginCachePrefix(parts, endExclusive) {
 	for (let index = 0; index < endExclusive - 1; index += 1) {
 		if (parts[index] === "plugins" && parts[index + 1] === "cache") return true;
+	}
+	return false;
+}
+
+function hasOmoCodexPluginPrefix(parts, endExclusive) {
+	for (let index = 0; index <= endExclusive - 3; index += 1) {
+		if (parts[index] === "packages" && parts[index + 1] === "omo-codex" && parts[index + 2] === "plugin") return true;
 	}
 	return false;
 }

@@ -25,6 +25,11 @@ import {
   mergeNativeSkills,
 } from "./native-skills"
 
+function ignoreNativeSkillsError(error: unknown): void {
+  if (error instanceof Error) return
+  throw error
+}
+
 export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
   let cachedDescription: string | null = null
 
@@ -45,7 +50,8 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
       try {
         const nativeAll = await options.nativeSkills.all()
         mergeNativeSkills(allSkills, nativeAll)
-      } catch {
+      } catch (error) {
+        ignoreNativeSkillsError(error)
       }
     }
 
@@ -70,7 +76,9 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
     // check already enforces the restriction at call time.
     const publicSkills = skills.filter((s) => !s.definition.agent)
     const skillInfos = publicSkills.map(loadedSkillToInfo)
-    cachedDescription = formatCombinedDescription(skillInfos, commands)
+    cachedDescription = formatCombinedDescription(skillInfos, commands, {
+      includeSkills: options.includeSkillsInDescription,
+    })
     return cachedDescription
   }
 
@@ -88,16 +96,21 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
         } else {
           mergeNativeSkillInfos(skillInfos, nativeAll)
         }
-      } catch {
+      } catch (error) {
+        ignoreNativeSkillsError(error)
       }
     }
 
-    cachedDescription = formatCombinedDescription(skillInfos, commandsForDescription)
+    cachedDescription = formatCombinedDescription(skillInfos, commandsForDescription, {
+      includeSkills: options.includeSkillsInDescription,
+    })
     if (needsAsyncRefresh) {
       void buildDescription(true)
     }
   } else if (options.commands !== undefined) {
-    cachedDescription = formatCombinedDescription([], options.commands)
+    cachedDescription = formatCombinedDescription([], options.commands, {
+      includeSkills: options.includeSkillsInDescription,
+    })
   }
 
   return tool({
@@ -117,7 +130,9 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
     async execute(args: SkillArgs, ctx?: ToolContext) {
       const skills = await getSkills(ctx)
       const commands = getCommands()
-      cachedDescription = formatCombinedDescription(skills.map(loadedSkillToInfo), commands)
+      cachedDescription = formatCombinedDescription(skills.map(loadedSkillToInfo), commands, {
+        includeSkills: options.includeSkillsInDescription,
+      })
 
       const requestedName = args.name.replace(/^\//, "")
       const matchedSkill = matchSkillByName(skills, requestedName)
